@@ -1,6 +1,6 @@
 from langchain_openai import ChatOpenAI
 from config import DEEPSEEK_API_KEY as apikey,BASE_URL as burl
-
+import time
 
 #model=openai.ChatOpenAI(api_key=apikey,base_url=burl)
 model=ChatOpenAI(
@@ -13,6 +13,11 @@ messages=[
     "今天晚上吃什么好呢,推荐一下,简短点",
     "你怎么看待现在大环境,简短点"
 ]
+#model.batch_as_completed(messages)
+start_time=time.time()
 response=model.batch(messages)
+end_time=time.time()
+print(f"Time taken: {end_time - start_time} seconds")
 for response in response:
     print(response.content)
+    print(f"Time taken: {time.time() - start_time} seconds")
