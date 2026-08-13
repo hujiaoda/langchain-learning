@@ -1,10 +1,14 @@
+import sys
+# Windows 终端默认 GBK 编码，遇到 emoji 会报错，统一改成 UTF-8
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from config import DEEPSEEK_API_KEY as apikey, BASE_URL as burl
 
-
-# ── 工具定义 ──
+# ── 工具定义（不变）──
 @tool
 def get_weather(city: str) -> str:
     """查询指定城市的天气，返回温度和天气状况"""
@@ -22,29 +26,7 @@ def get_time(place: str) -> str:
     from datetime import datetime
     return f"{place}当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
-
-# 工具名字 → 函数本体，替代 if/else
-tools_map = {t.name: t for t in [get_weather, calculator, get_time]}
-
-
-# ── 记忆系统（不变）──
-def get_role(m):
-    if isinstance(m, dict):
-        return m["role"]
-    return m.type
-
-def get_content(m):
-    if isinstance(m, dict):
-        return m["content"]
-    return m.content
-
-def trim_messages(messages, n):
-    system = [m for m in messages if get_role(m) == "system"]
-    others = [m for m in messages if get_role(m) != "system"]
-    return system + others[-n:]
-
-
-# ── 模型 + 工具绑定 ──
+# ── 模型 + agent（替代原来的手写循环）──
 model = init_chat_model(
     model="deepseek-v4-flash",
     model_provider="deepseek",
@@ -55,21 +37,19 @@ model = init_chat_model(
     timeout=30,
     max_retries=3,
 )
-model_with_tools = model.bind_tools([get_weather, calculator, get_time])
 
+agent = create_agent(model, tools=[get_weather, calculator, get_time])
 
-# ── 初始化对话 ──
-chat_prompt_template = ChatPromptTemplate([
-    ("system", "你是一个{name}，可以查天气、算数学、报时间"),
-    ("human", "你好,你叫什么名字"),
-    ("ai", "我是一个{name}没有名字"),
-    ("human", "这样啊,我是{user_input}"),
-])
-full_history = chat_prompt_template.invoke({
-    "name": "猫娘助手",
-    "user_input": "鸡蛋(eku)",
-}).messages  # 取消息列表
+# ── 多轮记忆：手动维护消息历史 ──
+# create_agent 每次 invoke 是独立的，不跨轮记忆，所以自己维护消息列表
+history = [SystemMessage(content="你是一个猫娘助手，可以查天气、算数学、报时间")]
 
+# ── 记忆截断：只保留最后 n 条非 system 消息，防止上下文无限增长 ──
+# 原版是 get_role() 判断裸字典，新版直接用 isinstance 判断消息类型
+def trim_history(messages, n=10):
+    system = [m for m in messages if isinstance(m, SystemMessage)]
+    others = [m for m in messages if not isinstance(m, SystemMessage)]
+    return system + others[-n:]
 
 # ── 主循环 ──
 while True:
@@ -77,28 +57,16 @@ while True:
     if user_input == "quit":
         break
 
-    # 追加用户消息
-    full_history.append({"role": "user", "content": user_input})
+    history.append(HumanMessage(content=user_input))
 
-    # Agent 循环：模型可能多次调工具
-    while True:
-        memory = trim_messages(full_history, n=12)   # 工具调用内部消息多，放宽一点
-        response = model_with_tools.invoke(memory)
+    # 流式输出：stream_mode="messages" 让 agent 像 model 一样逐 token 输出
+    print("AI: ", end="", flush=True)
+    full_reply = ""
+    for msg_chunk, _ in agent.stream({"messages": trim_history(history)}, stream_mode="messages"):
+        if msg_chunk.content:
+            print(msg_chunk.content, end="", flush=True)
+            full_reply += msg_chunk.content
+    print()
 
-        # 有 tool_call → 执行工具，继续循环
-        if response.tool_calls:
-            full_history.append(response)           # 保存这次工具调用决策
-            for tc in response.tool_calls:
-                tool_fn = tools_map[tc["name"]]
-                result = tool_fn.invoke(tc["args"])
-                full_history.append({               # 保存工具执行结果
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result,
-                })
-            # 继续循环，模型看到结果后决定是否继续调工具
-        else:
-            # 最终自然语言回复
-            print(response.content)
-            full_history.append({"role": "assistant", "content": response.content})
-            break
+    # 把最终回答记入历史，供下一轮使用
+    history.append(AIMessage(content=full_reply))
