@@ -49,6 +49,7 @@
 | 文件 | 内容 |
 |------|------|
 | `checkpointer.py` | 短期记忆（checkpointer + thread_id）与长期记忆（Store）示例 |
+| `store_tools_demo.py` | 工具访问长期记忆：InjectedStore 注入 + AI 自动读写完整闭环 |
 | `middleware_demo.py` | 中间件机制演示（before_model / after_model） |
 
 ### 综合项目
